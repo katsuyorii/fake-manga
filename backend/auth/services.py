@@ -1,4 +1,8 @@
-from fastapi import Response
+from fastapi import Response, Request
+
+from redis.asyncio import Redis
+
+from datetime import datetime, timezone
 
 from core.utils.passwords import hashing_password
 from core.utils.exceptions import EmailAlreadyRegistered
@@ -11,12 +15,28 @@ from core.utils.passwords import verify_password
 from .schemas import UserRegistrationSchema, UserLoginSchema, AccessTokenResponseSchema
 from .tasks import send_email_task
 from .utils import create_verify_email_message, create_access_token, create_refresh_token
-from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword
+from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword, TokenMissing
 
+
+class TokenBlacklistService:
+    def __init__(self, redis: Redis):
+        self.redis = redis
+    
+    async def add_to_blacklist(self, payload: dict, token: str) -> None:
+        key = f'blacklist:{token}'
+        expire_token = payload.get('exp')
+        datetime_now = int(datetime.now(timezone.utc).timestamp())
+        ttl = expire_token - datetime_now
+        
+        await self.redis.set(key, 'true', ex=ttl)
+    
+    async def is_blacklisted(self, token: str) -> bool:
+        return await self.redis.exists(f'blacklist:{token}')
 
 class AuthService:
-    def __init__(self, user_repository: UsersRepository):
+    def __init__(self, user_repository: UsersRepository, token_blacklist_service: TokenBlacklistService):
         self.user_repository = user_repository
+        self.token_blacklist_service = token_blacklist_service
 
     async def registration(self, user_data: UserRegistrationSchema):
         user = await self.user_repository.get_by_email(user_data.email)
@@ -40,6 +60,38 @@ class AuthService:
 
         return {'message': 'Письмо с подтверждением отправлено на почту!'}
     
+    async def authentication(self, user_data: UserLoginSchema, response: Response) -> AccessTokenResponseSchema:
+        user = await self.user_repository.get_by_email(user_data.email)
+
+        if not user or not verify_password(user_data.password, user.password):
+            raise IncorrectLoginOrPassword()
+        
+        if not user.is_active:
+            raise AccountInactive()
+        
+        if not user.is_verified:
+            raise AccountNotVerify()
+        
+        access_token = create_access_token({'sub': str(user.id), 'role': user.role}, response)
+        create_refresh_token({'sub': str(user.id)}, response)
+
+        return AccessTokenResponseSchema(access_token=access_token)
+
+    async def logout(self, request: Request, response: Response):
+        refresh_token = request.cookies.get('refresh_token')
+
+        if not refresh_token:
+            raise TokenMissing()
+        
+        payload = verify_jwt_token(token=refresh_token)
+
+        await self.token_blacklist_service.add_to_blacklist(payload, refresh_token)
+
+        response.delete_cookie(key='access_token')
+        response.delete_cookie(key='refresh_token')
+
+        return {'message': 'Вы успешно вышли из системы!'}
+    
     async def verify_email(self, token: str):
         payload = verify_jwt_token(token)
         user_id = int(payload.get('sub'))
@@ -58,20 +110,3 @@ class AuthService:
         await self.user_repository.verify_email(user)
 
         return {'message': 'Учетная запись успешно активирована!'}
-    
-    async def authentication(self, user_data: UserLoginSchema, response: Response) -> AccessTokenResponseSchema:
-        user = await self.user_repository.get_by_email(user_data.email)
-
-        if not user or not verify_password(user_data.password, user.password):
-            raise IncorrectLoginOrPassword()
-        
-        if not user.is_active:
-            raise AccountInactive()
-        
-        if not user.is_verified:
-            raise AccountNotVerify()
-        
-        access_token = create_access_token({'sub': str(user.id), 'role': user.role}, response)
-        create_refresh_token({'sub': str(user.id)}, response)
-
-        return AccessTokenResponseSchema(access_token=access_token)

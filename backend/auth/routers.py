@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status, Response
+from fastapi import APIRouter, Depends, status, Response, Request
 
 from .services import AuthService
 from .schemas import UserRegistrationSchema, UserLoginSchema, AccessTokenResponseSchema
@@ -17,6 +17,10 @@ async def registration_user(user_data: UserRegistrationSchema, auth_service: Aut
 @auth_router.post('/login', response_model=AccessTokenResponseSchema)
 async def login_user(user_data: UserLoginSchema, response: Response, auth_service: AuthService = Depends(get_auth_service)):
     return await auth_service.authentication(user_data, response)
+
+@auth_router.post('/logout')
+async def logout_user(request: Request, response: Response, auth_service: AuthService = Depends(get_auth_service)):
+    return await auth_service.logout(request, response)
 
 @auth_router.get('/email-verify')
 async def verify_email_user(token: str, auth_service: AuthService = Depends(get_auth_service)):
