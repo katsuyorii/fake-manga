@@ -1,14 +1,17 @@
+from fastapi import Response
+
 from core.utils.passwords import hashing_password
 from core.utils.exceptions import EmailAlreadyRegistered
 
 from users.repositories import UsersRepository
 from core.utils.jwt import verify_jwt_token
 from core.utils.exceptions import AccountMissing
+from core.utils.passwords import verify_password
 
-from .schemas import UserRegistrationSchema
+from .schemas import UserRegistrationSchema, UserLoginSchema, AccessTokenResponseSchema
 from .tasks import send_email_task
-from .utils import create_verify_email_message
-from .exceptions import AccountInactive
+from .utils import create_verify_email_message, create_access_token, create_refresh_token
+from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword
 
 
 class AuthService:
@@ -55,3 +58,20 @@ class AuthService:
         await self.user_repository.verify_email(user)
 
         return {'message': 'Учетная запись успешно активирована!'}
+    
+    async def authentication(self, user_data: UserLoginSchema, response: Response) -> AccessTokenResponseSchema:
+        user = await self.user_repository.get_by_email(user_data.email)
+
+        if not user or not verify_password(user_data.password, user.password):
+            raise IncorrectLoginOrPassword()
+        
+        if not user.is_active:
+            raise AccountInactive()
+        
+        if not user.is_verified:
+            raise AccountNotVerify()
+        
+        access_token = create_access_token({'sub': str(user.id), 'role': user.role}, response)
+        create_refresh_token({'sub': str(user.id)}, response)
+
+        return AccessTokenResponseSchema(access_token=access_token)
