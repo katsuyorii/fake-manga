@@ -4,6 +4,8 @@ from core.utils.exceptions import EmailAlreadyRegistered
 from users.repositories import UsersRepository
 
 from .schemas import UserRegistrationSchema
+from .tasks import send_email_task
+from .utils import create_verify_email_message
 
 
 class AuthService:
@@ -20,6 +22,14 @@ class AuthService:
 
         user_data_dict['password'] = hashing_password(user_data_dict.get('password'))
 
-        await self.user_repository.create(user_data_dict)
+        new_user = await self.user_repository.create(user_data_dict)
+
+        message = create_verify_email_message(new_user.id)
+
+        send_email_task.delay(
+        new_user.email,
+        "Подтверждение учетной записи",
+        message
+        )
 
         return {'message': 'Письмо с подтверждением отправлено на почту!'}

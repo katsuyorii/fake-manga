@@ -9,7 +9,54 @@ services:
       - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  cache:
+    image: redis:8
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    env_file:
+      - .env
+    volumes:
+      - redis_data:/data
   
+  broker:
+    image: rabbitmq:4.1.0-management
+    container_name: rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    env_file:
+      - .env
+    
+  worker:
+    build: ./backend
+    container_name: celery
+    restart: always
+    env_file:
+      - .env
+    volumes:
+    - ./backend:/app
+    command: celery -A src.celery.celery_app worker --loglevel=info
+    depends_on:
+      - broker
+  
+  flower:
+    image: mher/flower
+    container_name: flower
+    restart: always
+    ports:
+    - "5555:5555"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST}:${RABBITMQ_PORT}//
+    depends_on:
+      - broker
+      - worker
+
   backend:
     build: ./backend
     container_name: fastapi
@@ -23,6 +70,9 @@ services:
     command: bash entrypoint.sh
     depends_on:
       - db
+      - cache
+      - worker
 
 volumes:
   postgres_data:
+  redis_data:
