@@ -2,10 +2,13 @@ from core.utils.passwords import hashing_password
 from core.utils.exceptions import EmailAlreadyRegistered
 
 from users.repositories import UsersRepository
+from core.utils.jwt import verify_jwt_token
+from core.utils.exceptions import AccountMissing
 
 from .schemas import UserRegistrationSchema
 from .tasks import send_email_task
 from .utils import create_verify_email_message
+from .exceptions import AccountInactive
 
 
 class AuthService:
@@ -33,3 +36,22 @@ class AuthService:
         )
 
         return {'message': 'Письмо с подтверждением отправлено на почту!'}
+    
+    async def verify_email(self, token: str):
+        payload = verify_jwt_token(token)
+        user_id = int(payload.get('sub'))
+
+        user = await self.user_repository.get_by_id(user_id)
+
+        if not user:
+            raise AccountMissing()
+
+        if not user.is_active:
+            raise AccountInactive()
+
+        if user.is_verified:
+            return {'message': 'Учетная запись уже активирована!'}
+        
+        await self.user_repository.verify_email(user)
+
+        return {'message': 'Учетная запись успешно активирована!'}

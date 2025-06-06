@@ -13,3 +13,7 @@ auth_router = APIRouter(
 @auth_router.post('/registration', status_code=status.HTTP_201_CREATED)
 async def registration_user(user_data: UserRegistrationSchema, auth_service: AuthService = Depends(get_auth_service)):
     return await auth_service.registration(user_data)
+
+@auth_router.get('/email-verify')
+async def verify_email_user(token: str, auth_service: AuthService = Depends(get_auth_service)):
+    return await auth_service.verify_email(token)
