@@ -2,19 +2,20 @@ from fastapi import Response, Request
 
 from redis.asyncio import Redis
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from core.utils.passwords import hashing_password
 from core.utils.exceptions import EmailAlreadyRegistered
 
 from users.repositories import UsersRepository
-from core.utils.jwt import verify_jwt_token
+from core.utils.jwt import verify_jwt_token, create_jwt_token
 from core.utils.exceptions import AccountMissing
 from core.utils.passwords import verify_password
+from src.settings import jwt_settings
 
 from .schemas import UserRegistrationSchema, UserLoginSchema, AccessTokenResponseSchema
 from .tasks import send_email_task
-from .utils import create_verify_email_message, create_access_token, create_refresh_token
+from .utils import create_verify_email_message
 from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword, TokenMissing
 
 
@@ -32,11 +33,35 @@ class TokenBlacklistService:
     
     async def is_blacklisted(self, token: str) -> bool:
         return await self.redis.exists(f'blacklist:{token}')
+    
+class TokenService:
+    def create_access_token(self, payload: dict, response: Response) -> str:
+        access_token = create_jwt_token(payload, timedelta(minutes=jwt_settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+        self._set_jwt_cookies(response, 'access_token', access_token, jwt_settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+        return access_token
+
+    def create_refresh_token(self, payload: dict, response: Response) -> str:
+        refresh_token = create_jwt_token(payload, timedelta(days=jwt_settings.REFRESH_TOKEN_EXPIRE_DAYS))
+        self._set_jwt_cookies(response, 'refresh_token', refresh_token, jwt_settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60)
+
+        return refresh_token
+
+    def _set_jwt_cookies(self, response: Response, key: str, value: str, max_age: int) -> None:
+        response.set_cookie(
+            key=key,
+            value=value,
+            max_age=max_age,
+            secure=True,
+            httponly=True,
+            samesite='strict',
+        )
 
 class AuthService:
-    def __init__(self, user_repository: UsersRepository, token_blacklist_service: TokenBlacklistService):
+    def __init__(self, user_repository: UsersRepository, token_blacklist_service: TokenBlacklistService, token_service: TokenService):
         self.user_repository = user_repository
         self.token_blacklist_service = token_blacklist_service
+        self.token_service = token_service
 
     async def registration(self, user_data: UserRegistrationSchema):
         user = await self.user_repository.get_by_email(user_data.email)
@@ -72,8 +97,8 @@ class AuthService:
         if not user.is_verified:
             raise AccountNotVerify()
         
-        access_token = create_access_token({'sub': str(user.id), 'role': user.role}, response)
-        create_refresh_token({'sub': str(user.id)}, response)
+        access_token = self.token_service.create_access_token({'sub': str(user.id), 'role': user.role}, response)
+        self.token_service.create_refresh_token({'sub': str(user.id)}, response)
 
         return AccessTokenResponseSchema(access_token=access_token)
 
