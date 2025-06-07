@@ -16,7 +16,7 @@ from src.settings import jwt_settings
 from .schemas import UserRegistrationSchema, UserLoginSchema, AccessTokenResponseSchema
 from .tasks import send_email_task
 from .utils import create_verify_email_message
-from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword, TokenMissing
+from .exceptions import AccountInactive, AccountNotVerify, IncorrectLoginOrPassword, TokenMissing, TokenInvalid
 
 
 class TokenBlacklistService:
@@ -116,6 +116,33 @@ class AuthService:
         response.delete_cookie(key='refresh_token')
 
         return {'message': 'Вы успешно вышли из системы!'}
+    
+    async def refresh(self, request: Request, response: Response) -> AccessTokenResponseSchema:
+        refresh_token = request.cookies.get('refresh_token')
+
+        if not refresh_token:
+            raise TokenMissing()
+        
+        if await self.token_blacklist_service.is_blacklisted(refresh_token):
+            raise TokenInvalid()
+
+        payload = verify_jwt_token(refresh_token)
+        user_id = int(payload.get('sub'))
+
+        user = await self.user_repository.get_by_id(user_id)
+
+        if not user:
+            raise AccountMissing()
+        
+        if not user.is_active:
+            raise AccountInactive()
+
+        access_token = self.token_service.create_access_token({'sub': str(user_id), 'role': user.role}, response)
+        self.token_service.create_refresh_token({'sub': str(user_id)}, response)
+
+        await self.token_blacklist_service.add_to_blacklist(payload, refresh_token)
+
+        return AccessTokenResponseSchema(access_token=access_token)
     
     async def verify_email(self, token: str):
         payload = verify_jwt_token(token)
